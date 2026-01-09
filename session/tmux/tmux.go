@@ -64,6 +64,10 @@ var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 func toClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
+	// Don't add prefix if it's already there
+	if strings.HasPrefix(str, TmuxPrefix) {
+		return str
+	}
 	return fmt.Sprintf("%s%s", TmuxPrefix, str)
 }
 

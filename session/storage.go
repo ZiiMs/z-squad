@@ -22,6 +22,14 @@ type InstanceData struct {
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`
 	DiffStats DiffStatsData   `json:"diff_stats"`
+	DevServer *DevServerData  `json:"dev_server,omitempty"`
+}
+
+// DevServerData represents the serializable data of a DevServer
+type DevServerData struct {
+	Config     DevServerConfig `json:"config"`
+	Status     DevServerStatus `json:"status"`
+	CrashCount int             `json:"crash_count"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree

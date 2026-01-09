@@ -3,18 +3,25 @@ package git
 import (
 	"claude-squad/config"
 	"claude-squad/log"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"time"
 )
 
-func getWorktreeDirectory() (string, error) {
+func repoIdentity(repoRoot string) string {
+	hash := sha256.Sum256([]byte(repoRoot))
+	return fmt.Sprintf("%x", hash)
+}
+
+func getWorktreeDirectory(repoPath string) (string, error) {
 	configDir, err := config.GetConfigDir()
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(configDir, "worktrees"), nil
+	identity := repoIdentity(repoPath)
+	return filepath.Join(configDir, identity, "worktrees"), nil
 }
 
 // GitWorktree manages git worktree operations for a session
@@ -62,7 +69,7 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 		return nil, "", err
 	}
 
-	worktreeDir, err := getWorktreeDirectory()
+	worktreeDir, err := getWorktreeDirectory(repoPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -102,4 +109,15 @@ func (g *GitWorktree) GetRepoName() string {
 // GetBaseCommitSHA returns the base commit SHA for the worktree
 func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
+}
+
+// copySettingsAndEnvFiles copies .claude-squad/settings.json and .env files from main repo to worktree
+func (g *GitWorktree) copySettingsAndEnvFiles() error {
+	if err := config.CopySettingsToWorktree(g.repoPath, g.worktreePath); err != nil {
+		return fmt.Errorf("failed to copy settings: %w", err)
+	}
+	if err := config.CopyEnvFiles(g.repoPath, g.worktreePath); err != nil {
+		return fmt.Errorf("failed to copy env files: %w", err)
+	}
+	return nil
 }

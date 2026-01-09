@@ -28,6 +28,11 @@ const (
 	// Diff keybindings
 	KeyShiftUp
 	KeyShiftDown
+
+	// Dev server keybindings
+	KeyDevServerStart
+	KeyDevServerStop
+	KeyDevServerEdit
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -49,6 +54,9 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"r":          KeyResume,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
+	"s":          KeyDevServerStart,
+	"S":          KeyDevServerStop,
+	"e":          KeyDevServerEdit,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -115,5 +123,20 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeySubmitName: key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "submit name"),
+	),
+
+	// -- Dev server keybindings --
+
+	KeyDevServerStart: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "start dev server"),
+	),
+	KeyDevServerStop: key.NewBinding(
+		key.WithKeys("S"),
+		key.WithHelp("S", "stop dev server"),
+	),
+	KeyDevServerEdit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "edit dev server config"),
 	),
 }

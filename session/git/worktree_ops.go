@@ -1,6 +1,7 @@
 package git
 
 import (
+	"claude-squad/config"
 	"claude-squad/log"
 	"fmt"
 	"os"
@@ -15,7 +16,7 @@ import (
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
 	// Ensure worktrees directory exists early (can be done in parallel with branch check)
-	worktreesDir, err := getWorktreeDirectory()
+	worktreesDir, err := getWorktreeDirectory(g.repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree directory: %w", err)
 	}
@@ -69,6 +70,11 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
 	}
 
+	// Copy settings and env files from main repo to worktree
+	if err := g.copySettingsAndEnvFiles(); err != nil {
+		log.WarningLog.Printf("failed to copy settings to worktree: %v", err)
+	}
+
 	return nil
 }
 
@@ -112,6 +118,11 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// TODO: we might want to give an option to use main/master instead of the current branch.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	}
+
+	// Copy settings and env files from main repo to worktree
+	if err := g.copySettingsAndEnvFiles(); err != nil {
+		log.WarningLog.Printf("failed to copy settings to worktree: %v", err)
 	}
 
 	return nil
@@ -182,13 +193,43 @@ func (g *GitWorktree) Prune() error {
 
 // CleanupWorktrees removes all worktrees and their associated branches
 func CleanupWorktrees() error {
-	worktreesDir, err := getWorktreeDirectory()
+	configDir, err := config.GetConfigDir()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree directory: %w", err)
+		return fmt.Errorf("failed to get config directory: %w", err)
 	}
 
+	legacyWorktreesDir := filepath.Join(configDir, "worktrees")
+	dirsToClean := []string{legacyWorktreesDir}
+
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return fmt.Errorf("failed to read config directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			worktreesPath := filepath.Join(configDir, entry.Name(), "worktrees")
+			if _, err := os.Stat(worktreesPath); err == nil {
+				dirsToClean = append(dirsToClean, worktreesPath)
+			}
+		}
+	}
+
+	for _, worktreesDir := range dirsToClean {
+		if err := cleanupWorktreeDir(worktreesDir); err != nil {
+			log.ErrorLog.Printf("failed to cleanup worktrees in %s: %v", worktreesDir, err)
+		}
+	}
+
+	return nil
+}
+
+func cleanupWorktreeDir(worktreesDir string) error {
 	entries, err := os.ReadDir(worktreesDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to read worktree directory: %w", err)
 	}
 

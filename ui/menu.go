@@ -124,6 +124,12 @@ func (m *Menu) addInstanceOptions() {
 	// Instance management group
 	options := []keys.KeyName{keys.KeyNew, keys.KeyKill}
 
+	// Dev server group (only if dev server is configured)
+	if m.instance.DevServer != nil && m.instance.DevServer.Config().DevCommand != "" {
+		serverGroup := []keys.KeyName{keys.KeyDevServerStart, keys.KeyDevServerStop, keys.KeyDevServerEdit}
+		options = append(options, serverGroup...)
+	}
+
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
 	if m.instance.Status == session.Paused {

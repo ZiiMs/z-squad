@@ -10,6 +10,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -22,12 +25,50 @@ const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
+	home := newHome(ctx, program, autoYes)
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Cleanup function to stop all dev servers
+	cleanup := func() {
+		log.InfoLog.Printf("Cleaning up dev servers on shutdown...")
+		for _, instance := range home.list.GetInstances() {
+			if instance.DevServer != nil && instance.DevServer.Status() == session.DevServerRunning {
+				if err := instance.DevServer.Stop(); err != nil {
+					log.ErrorLog.Printf("failed to stop dev server for %s: %v", instance.Title, err)
+				}
+			}
+		}
+		// Save instances state
+		if err := home.storage.SaveInstances(home.list.GetInstances()); err != nil {
+			log.ErrorLog.Printf("failed to save instances on shutdown: %v", err)
+		}
+	}
+
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes),
+		home,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
+
+	// Handle signals in a goroutine
+	go func() {
+		sig := <-sigChan
+		log.InfoLog.Printf("Received signal %s, initiating graceful shutdown...", sig)
+		cleanup()
+		p.Quit()
+	}()
+
 	_, err := p.Run()
+
+	// Stop signal handling
+	signal.Stop(sigChan)
+
+	// Run cleanup on normal exit too (in case handleQuit wasn't called)
+	cleanup()
+
 	return err
 }
 
@@ -43,6 +84,8 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateDevServerConfig is when user is configuring dev server settings.
+	stateDevServerConfig
 )
 
 type home struct {
@@ -95,13 +138,20 @@ type home struct {
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
-	// Load application config
+	currentDir, err := filepath.Abs(".")
+	if err != nil {
+		fmt.Printf("Failed to get current directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := config.MigrateLegacyState(); err != nil {
+		log.ErrorLog.Printf("failed to migrate legacy state: %v", err)
+	}
+
 	appConfig := config.LoadConfig()
 
-	// Load application state
-	appState := config.LoadState()
+	appState := config.LoadStateForRepo(currentDir)
 
-	// Initialize storage
 	storage, err := session.NewStorage(appState)
 	if err != nil {
 		fmt.Printf("Failed to initialize storage: %v\n", err)
@@ -218,6 +268,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := instance.UpdateDiffStats(); err != nil {
 				log.WarningLog.Printf("could not update diff stats: %v", err)
 			}
+			// Check dev server health
+			if instance.DevServer != nil {
+				instance.DevServer.CheckHealth()
+			}
 		}
 		return m, tickUpdateMetadataCmd
 	case tea.MouseMsg:
@@ -258,6 +312,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	// Stop all running dev servers before quitting
+	for _, instance := range m.list.GetInstances() {
+		if instance.DevServer != nil && instance.DevServer.Status() == session.DevServerRunning {
+			if err := instance.DevServer.Stop(); err != nil {
+				log.ErrorLog.Printf("failed to stop dev server for %s: %v", instance.Title, err)
+			}
+		}
+	}
+
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 		return m, m.handleError(err)
 	}
@@ -271,7 +334,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateDevServerConfig {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -424,7 +487,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				},
 			)
 		}
-
+		return m, nil
+	} else if m.state == stateDevServerConfig {
+		// Dev server configuration overlay - callback handles all state transitions
+		if m.textInputOverlay == nil {
+			m.state = stateDefault
+			return m, nil
+		}
+		m.textInputOverlay.HandleKeyPress(msg)
 		return m, nil
 	}
 
@@ -444,13 +514,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	// Always check for escape key first to ensure it doesn't get intercepted elsewhere
 	if msg.Type == tea.KeyEsc {
 		// If in preview tab and in scroll mode, exit scroll mode
-		if !m.tabbedWindow.IsInDiffTab() && m.tabbedWindow.IsPreviewInScrollMode() {
-			// Use the selected instance from the list
+		if !m.tabbedWindow.IsInDiffTab() && !m.tabbedWindow.IsInServerTab() && m.tabbedWindow.IsPreviewInScrollMode() {
 			selected := m.list.GetSelectedInstance()
 			err := m.tabbedWindow.ResetPreviewToNormalMode(selected)
 			if err != nil {
 				return m, m.handleError(err)
 			}
+			return m, m.instanceChanged()
+		}
+		// If in server tab and in scroll mode, exit scroll mode
+		if m.tabbedWindow.IsInServerTab() && m.tabbedWindow.IsServerInScrollMode() {
+			m.tabbedWindow.ResetServerToNormalMode()
 			return m, m.instanceChanged()
 		}
 	}
@@ -607,6 +681,33 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()
+	case keys.KeyDevServerStart:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		return m, m.handleDevServerStart(selected)
+	case keys.KeyDevServerStop:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		return m, m.handleDevServerStop(selected)
+	case keys.KeyDevServerEdit:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		return m, m.handleDevServerEdit(selected)
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -646,6 +747,14 @@ func (m *home) instanceChanged() tea.Cmd {
 	if err := m.tabbedWindow.UpdatePreview(selected); err != nil {
 		return m.handleError(err)
 	}
+
+	// Update server pane if dev server is running
+	if selected != nil && selected.DevServer != nil {
+		if err := m.tabbedWindow.UpdateServer(selected); err != nil {
+			return m.handleError(err)
+		}
+	}
+
 	return nil
 }
 
@@ -721,6 +830,211 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	return nil
 }
 
+func (m *home) handleDevServerStart(instance *session.Instance) tea.Cmd {
+	worktreePath := ""
+	repoPath := ""
+
+	// Try to get worktree path from gitWorktree
+	worktree, err := instance.GetGitWorktree()
+	if err == nil && worktree != nil {
+		worktreePath = worktree.GetWorktreePath()
+		repoPath = worktree.GetRepoPath()
+	}
+
+	// Fallback to instance path
+	if worktreePath == "" {
+		worktreePath = instance.Path
+	}
+	if repoPath == "" {
+		// Try to get repo path from worktree path
+		repoPath = worktreePath
+	}
+
+	log.InfoLog.Printf("handleDevServerStart: worktreePath=%s, repoPath=%s", worktreePath, repoPath)
+
+	if instance.DevServer == nil {
+		// Load settings from main repo (project-wide settings)
+		settings, err := config.LoadDevServerSettings(repoPath)
+		if err != nil {
+			return m.handleError(err)
+		}
+
+		if settings == nil || settings.DevCommand == "" {
+			return m.showDevServerConfigOverlay(instance, repoPath)
+		}
+
+		instance.DevServer = session.NewDevServer(
+			session.DevServerConfig{
+				BuildCommand: settings.BuildCommand,
+				DevCommand:   settings.DevCommand,
+				Env:          settings.Env,
+			},
+			worktreePath,
+			instance.Title,
+		)
+	}
+
+	if err := instance.DevServer.Start(); err != nil {
+		return m.handleError(err)
+	}
+
+	return m.instanceChanged()
+}
+
+func (m *home) handleDevServerStop(instance *session.Instance) tea.Cmd {
+	if instance.DevServer == nil {
+		return nil
+	}
+
+	if err := instance.DevServer.Stop(); err != nil {
+		return m.handleError(err)
+	}
+
+	return m.instanceChanged()
+}
+
+func (m *home) handleDevServerEdit(instance *session.Instance) tea.Cmd {
+	worktreePath := ""
+	repoPath := ""
+
+	// Try to get worktree path from gitWorktree
+	worktree, err := instance.GetGitWorktree()
+	if err == nil && worktree != nil {
+		worktreePath = worktree.GetWorktreePath()
+		repoPath = worktree.GetRepoPath()
+	}
+
+	// Fallback to instance path
+	if worktreePath == "" {
+		worktreePath = instance.Path
+	}
+	if repoPath == "" {
+		repoPath = instance.Path
+	}
+
+	// Stop the dev server if running
+	if instance.DevServer != nil && instance.DevServer.IsRunning() {
+		instance.DevServer.Stop()
+	}
+
+	// Load existing settings (or defaults)
+	settings, _ := config.LoadDevServerSettings(repoPath)
+	if settings == nil {
+		settings = &config.DevServerSettings{
+			BuildCommand: "",
+			DevCommand:   "",
+			Env:          make(map[string]string),
+		}
+	}
+
+	m.state = stateDevServerConfig
+	m.textInputOverlay = overlay.NewTextInputOverlay("Build command (empty to skip):", settings.BuildCommand)
+	m.textInputOverlay.SetOnSubmit(func() {
+		buildCmd := m.textInputOverlay.GetValue()
+
+		m.textInputOverlay = overlay.NewTextInputOverlay("Dev server command:", settings.DevCommand)
+		m.textInputOverlay.SetOnSubmit(func() {
+			devCmd := m.textInputOverlay.GetValue()
+
+			newSettings := &config.DevServerSettings{
+				BuildCommand: buildCmd,
+				DevCommand:   devCmd,
+				Env:          make(map[string]string),
+			}
+
+			// Save settings to main repo (project-wide)
+			if err := config.SaveDevServerSettings(newSettings, repoPath); err != nil {
+				m.handleError(err)
+				return
+			}
+
+			instance.DevServer = session.NewDevServer(
+				session.DevServerConfig{
+					BuildCommand: buildCmd,
+					DevCommand:   devCmd,
+					Env:          newSettings.Env,
+				},
+				worktreePath,
+				instance.Title,
+			)
+
+			m.state = stateDefault
+			m.textInputOverlay = nil
+			m.instanceChanged()
+		})
+	})
+
+	return nil
+}
+
+type devServerConfigState int
+
+const (
+	devServerConfigBuild devServerConfigState = iota
+	devServerConfigDev
+	devServerConfigDone
+)
+
+type devServerConfigOverlay struct {
+	state       devServerConfigState
+	buildCmd    string
+	devCmd      string
+	instance    *session.Instance
+	repoPath    string
+	worktree    string
+	textOverlay *overlay.TextInputOverlay
+}
+
+func (m *home) showDevServerConfigOverlay(instance *session.Instance, repoPath string) tea.Cmd {
+	worktreePath := ""
+	worktree, err := instance.GetGitWorktree()
+	if err == nil && worktree != nil {
+		worktreePath = worktree.GetWorktreePath()
+	}
+	if worktreePath == "" {
+		worktreePath = instance.Path
+	}
+
+	m.state = stateDevServerConfig
+	m.textInputOverlay = overlay.NewTextInputOverlay("Build command (empty to skip):", "")
+	m.textInputOverlay.SetOnSubmit(func() {
+		buildCmd := m.textInputOverlay.GetValue()
+
+		m.textInputOverlay = overlay.NewTextInputOverlay("Dev server command:", "")
+		m.textInputOverlay.SetOnSubmit(func() {
+			devCmd := m.textInputOverlay.GetValue()
+
+			settings := &config.DevServerSettings{
+				BuildCommand: buildCmd,
+				DevCommand:   devCmd,
+				Env:          make(map[string]string),
+			}
+
+			// Save settings to main repo (project-wide)
+			if err := config.SaveDevServerSettings(settings, repoPath); err != nil {
+				m.handleError(err)
+				return
+			}
+
+			instance.DevServer = session.NewDevServer(
+				session.DevServerConfig{
+					BuildCommand: buildCmd,
+					DevCommand:   devCmd,
+					Env:          settings.Env,
+				},
+				worktreePath,
+				instance.Title,
+			)
+
+			m.state = stateDefault
+			m.textInputOverlay = nil
+			m.handleDevServerStart(instance)
+		})
+	})
+
+	return nil
+}
+
 func (m *home) View() string {
 	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
@@ -733,7 +1047,7 @@ func (m *home) View() string {
 		m.errBox.String(),
 	)
 
-	if m.state == statePrompt {
+	if m.state == statePrompt || m.state == stateDevServerConfig {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}

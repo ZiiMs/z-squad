@@ -32,6 +32,7 @@ var (
 
 const (
 	PreviewTab int = iota
+	ServerTab
 	DiffTab
 )
 
@@ -50,6 +51,7 @@ type TabbedWindow struct {
 	width     int
 
 	preview  *PreviewPane
+	server   *ServerPane
 	diff     *DiffPane
 	instance *session.Instance
 }
@@ -58,9 +60,11 @@ func NewTabbedWindow(preview *PreviewPane, diff *DiffPane) *TabbedWindow {
 	return &TabbedWindow{
 		tabs: []string{
 			"Preview",
+			"Server",
 			"Diff",
 		},
 		preview: preview,
+		server:  NewServerPane(),
 		diff:    diff,
 	}
 }
@@ -87,6 +91,7 @@ func (w *TabbedWindow) SetSize(width, height int) {
 	contentWidth := w.width - windowStyle.GetHorizontalFrameSize()
 
 	w.preview.SetSize(contentWidth, contentHeight)
+	w.server.SetSize(contentWidth, contentHeight)
 	w.diff.SetSize(contentWidth, contentHeight)
 }
 
@@ -123,36 +128,64 @@ func (w *TabbedWindow) UpdateDiff(instance *session.Instance) {
 	w.diff.SetDiff(instance)
 }
 
+func (w *TabbedWindow) UpdateServer(instance *session.Instance) error {
+	if w.activeTab != ServerTab {
+		return nil
+	}
+	return w.server.UpdateContent(instance)
+}
+
 // ResetPreviewToNormalMode resets the preview pane to normal mode
 func (w *TabbedWindow) ResetPreviewToNormalMode(instance *session.Instance) error {
 	return w.preview.ResetToNormalMode(instance)
 }
 
+// ResetServerToNormalMode resets the server pane to normal mode
+func (w *TabbedWindow) ResetServerToNormalMode() {
+	w.server.ResetToNormalMode()
+}
+
+// IsServerInScrollMode returns true if the server pane is in scroll mode
+func (w *TabbedWindow) IsServerInScrollMode() bool {
+	return w.server.IsScrolling()
+}
+
 // Add these new methods for handling scroll events
 func (w *TabbedWindow) ScrollUp() {
-	if w.activeTab == PreviewTab {
+	switch w.activeTab {
+	case PreviewTab:
 		err := w.preview.ScrollUp(w.instance)
 		if err != nil {
 			log.InfoLog.Printf("tabbed window failed to scroll up: %v", err)
 		}
-	} else {
+	case ServerTab:
+		w.server.ScrollUp()
+	case DiffTab:
 		w.diff.ScrollUp()
 	}
 }
 
 func (w *TabbedWindow) ScrollDown() {
-	if w.activeTab == PreviewTab {
+	switch w.activeTab {
+	case PreviewTab:
 		err := w.preview.ScrollDown(w.instance)
 		if err != nil {
 			log.InfoLog.Printf("tabbed window failed to scroll down: %v", err)
 		}
-	} else {
+	case ServerTab:
+		w.server.ScrollDown()
+	case DiffTab:
 		w.diff.ScrollDown()
 	}
 }
 
 // IsInDiffTab returns true if the diff tab is currently active
 func (w *TabbedWindow) IsInDiffTab() bool {
+	return w.activeTab == 2
+}
+
+// IsInServerTab returns true if the server tab is currently active
+func (w *TabbedWindow) IsInServerTab() bool {
 	return w.activeTab == 1
 }
 
@@ -202,10 +235,15 @@ func (w *TabbedWindow) String() string {
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
 	var content string
-	if w.activeTab == 0 {
+	switch w.activeTab {
+	case 0:
 		content = w.preview.String()
-	} else {
+	case 1:
+		content = w.server.String()
+	case 2:
 		content = w.diff.String()
+	default:
+		content = w.preview.String()
 	}
 	window := windowStyle.Render(
 		lipgloss.Place(

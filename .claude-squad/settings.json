@@ -1,0 +1,6 @@
+{
+  "build_command": "",
+  "dev_command": "go run main.go",
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "2026-01-08T15:53:08.943593342-05:00"
+}

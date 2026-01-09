@@ -53,6 +53,15 @@ var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
 
+var devServerRunningStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
+
+var devServerStoppedStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
+var devServerCrashedStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#de613e", Dark: "#de613e"})
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -113,6 +122,39 @@ func (r *InstanceRenderer) setWidth(width int) {
 
 // ɹ and ɻ are other options.
 const branchIcon = "Ꮧ"
+
+func getDevServerStatusText(instance *session.Instance) string {
+	if instance.DevServer == nil {
+		return ""
+	}
+
+	status := instance.DevServer.Status()
+	config := instance.DevServer.Config()
+
+	if config.DevCommand == "" {
+		return ""
+	}
+
+	var statusIcon string
+	var statusStyle lipgloss.Style
+
+	switch status {
+	case session.DevServerRunning:
+		statusIcon = "●"
+		statusStyle = devServerRunningStyle
+	case session.DevServerStarting, session.DevServerBuilding:
+		statusIcon = "○"
+		statusStyle = devServerStoppedStyle
+	case session.DevServerCrashed:
+		statusIcon = "✖"
+		statusStyle = devServerCrashedStyle
+	default:
+		statusIcon = "○"
+		statusStyle = devServerStoppedStyle
+	}
+
+	return statusStyle.Render(fmt.Sprintf("[DEV: %s]", statusIcon))
+}
 
 func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, hasMultipleRepos bool) string {
 	prefix := fmt.Sprintf(" %d. ", idx)
@@ -205,6 +247,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		}
 	}
 	remainingWidth -= runewidth.StringWidth(branch)
+	remainingWidth -= runewidth.StringWidth(getDevServerStatusText(i))
 
 	// Add spaces to fill the remaining width.
 	spaces := ""
@@ -212,7 +255,8 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		spaces = strings.Repeat(" ", remainingWidth)
 	}
 
-	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
+	devServerStatus := getDevServerStatusText(i)
+	branchLine := fmt.Sprintf("%s %s-%s%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff, devServerStatus)
 
 	// join title and subtitle
 	text := lipgloss.JoinVertical(

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -77,20 +78,27 @@ var (
 
 	resetCmd = &cobra.Command{
 		Use:   "reset",
-		Short: "Reset all stored instances",
+		Short: "Reset stored instances for the current repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Initialize(false)
 			defer log.Close()
 
-			state := config.LoadState()
-			storage, err := session.NewStorage(state)
+			currentDir, err := filepath.Abs(".")
 			if err != nil {
-				return fmt.Errorf("failed to initialize storage: %w", err)
+				return fmt.Errorf("failed to get current directory: %w", err)
 			}
-			if err := storage.DeleteAllInstances(); err != nil {
-				return fmt.Errorf("failed to reset storage: %w", err)
+
+			allFlag, _ := cmd.Flags().GetBool("all")
+
+			if allFlag {
+				if err := resetAllRepos(currentDir); err != nil {
+					return err
+				}
+			} else {
+				if err := resetCurrentRepo(currentDir); err != nil {
+					return err
+				}
 			}
-			fmt.Println("Storage has been reset successfully")
 
 			if err := tmux.CleanupSessions(cmd2.MakeExecutor()); err != nil {
 				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
@@ -102,11 +110,10 @@ var (
 			}
 			fmt.Println("Worktrees have been cleaned up")
 
-			// Kill any daemon that's running.
 			if err := daemon.StopDaemon(); err != nil {
 				return err
 			}
-			fmt.Println("daemon has been stopped")
+			fmt.Println("Daemon has been stopped")
 
 			return nil
 		},
@@ -143,6 +150,63 @@ var (
 	}
 )
 
+func resetCurrentRepo(currentDir string) error {
+	state := config.LoadStateForRepo(currentDir)
+	storage, err := session.NewStorage(state)
+	if err != nil {
+		return fmt.Errorf("failed to initialize storage: %w", err)
+	}
+	if err := storage.DeleteAllInstances(); err != nil {
+		return fmt.Errorf("failed to reset storage: %w", err)
+	}
+	fmt.Println("Storage for current repository has been reset successfully")
+	return nil
+}
+
+func resetAllRepos(currentDir string) error {
+	configDir, err := config.GetConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	state := config.LoadState()
+	storage, err := session.NewStorage(state)
+	if err != nil {
+		return fmt.Errorf("failed to initialize storage: %w", err)
+	}
+	if err := storage.DeleteAllInstances(); err != nil {
+		return fmt.Errorf("failed to reset storage: %w", err)
+	}
+	fmt.Println("Storage has been reset successfully")
+
+	legacyPath := filepath.Join(configDir, config.LegacyStateFileName)
+	if _, err := os.Stat(legacyPath); err == nil {
+		if err := os.Remove(legacyPath); err != nil {
+			log.WarningLog.Printf("failed to remove legacy state backup: %v", err)
+		} else {
+			fmt.Println("Legacy state backup removed")
+		}
+	}
+
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return fmt.Errorf("failed to read config directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			statePath := filepath.Join(configDir, entry.Name(), config.StateFileName)
+			if _, err := os.Stat(statePath); err == nil {
+				if err := os.Remove(statePath); err != nil {
+					log.WarningLog.Printf("failed to remove state for %s: %v", entry.Name(), err)
+				}
+			}
+		}
+	}
+	fmt.Println("All repository states have been reset")
+	return nil
+}
+
 func init() {
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
@@ -160,6 +224,8 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+
+	resetCmd.Flags().Bool("all", false, "Reset all repositories instead of just the current one")
 }
 
 func main() {

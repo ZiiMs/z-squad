@@ -1,6 +1,7 @@
 package git
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -83,4 +84,9 @@ func findGitRepoRoot(path string) (string, error) {
 		}
 		currentPath = parent
 	}
+}
+
+func RepoIdentity(repoRoot string) string {
+	hash := sha256.Sum256([]byte(repoRoot))
+	return fmt.Sprintf("%x", hash)
 }
