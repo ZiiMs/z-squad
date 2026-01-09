@@ -31,6 +31,8 @@ var (
 			log.Initialize(daemonFlag)
 			defer log.Close()
 
+			log.InfoLog.Printf("Starting claude-squad version %s", version)
+
 			if daemonFlag {
 				cfg := config.LoadConfig()
 				err := daemon.RunDaemon(cfg)

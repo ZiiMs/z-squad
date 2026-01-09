@@ -271,16 +271,24 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 }
 
 func (t *TmuxSession) Attach() (chan struct{}, error) {
+	// Check if ptmx exists (for detached sessions like dev servers)
+	if t.ptmx == nil {
+		log.InfoLog.Printf("Attach: ptmx is nil, calling Restore() to create PTY connection")
+		if err := t.Restore(); err != nil {
+			return nil, fmt.Errorf("failed to restore session: %w", err)
+		}
+	}
+
 	t.attachCh = make(chan struct{})
 
 	t.wg = &sync.WaitGroup{}
 	t.wg.Add(1)
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 
-	// The first goroutine should terminate when the ptmx is closed. We use the
+	// The first goroutine should terminate when ptmx is closed. We use
 	// waitgroup to wait for it to finish.
 	// The 2nd one returns when you press escape to Detach. It doesn't need to be
-	// in the waitgroup because is the goroutine doing the Detaching; it waits for
+	// in the waitgroup because is goroutine doing the Detaching; it waits for
 	// all the other ones.
 	go func() {
 		defer t.wg.Done()

@@ -46,6 +46,8 @@ const (
 	DevServerCrashed
 )
 
+const devServerGracePeriod = 3 * time.Second // Grace period before checking health of newly started server
+
 // DevServerConfig holds configuration for a dev server
 type DevServerConfig struct {
 	BuildCommand string            `json:"build_command"`
@@ -65,6 +67,7 @@ type DevServer struct {
 	worktree   string
 	instance   string
 	startMu    sync.Mutex // Prevent concurrent starts
+	startedAt  time.Time  // Track when server was started for grace period
 }
 
 // Instance is a running instance of claude code.
@@ -107,6 +110,7 @@ type Instance struct {
 		Start() error
 		Stop() error
 		CheckHealth()
+		GetDevServerSession() *tmux.TmuxSession
 	}
 
 	// The below fields are initialized upon calling Start().
@@ -676,14 +680,33 @@ func (d *DevServer) UpdateOutputFromSession() error {
 	}
 	content, err := d.session.CapturePaneContent()
 	if err != nil {
+		log.InfoLog.Printf("UpdateOutputFromSession: capture error: %v", err)
 		return err
 	}
+
+	d.outputMu.Lock()
+	defer d.outputMu.Unlock()
+
 	lines := strings.Split(content, "\n")
+
+	// Filter out empty lines
+	var nonEmptyLines []string
 	for _, line := range lines {
 		if strings.TrimSpace(line) != "" {
-			d.appendOutput(line)
+			nonEmptyLines = append(nonEmptyLines, line)
 		}
 	}
+
+	// Only keep last 100 lines (matches tmux scrollback limit)
+	if len(nonEmptyLines) > 100 {
+		nonEmptyLines = nonEmptyLines[len(nonEmptyLines)-100:]
+	}
+
+	// Update output buffer
+	d.output = nonEmptyLines
+
+	log.InfoLog.Printf("UpdateOutputFromSession: captured %d total lines (empty filtered)", len(nonEmptyLines))
+
 	return nil
 }
 
@@ -717,7 +740,10 @@ func (d *DevServer) SessionExists() bool {
 
 // CheckHealth checks if the dev server is still running
 func (d *DevServer) CheckHealth() {
+	log.InfoLog.Printf("CheckHealth: called - status=%v, startedAt=%v, session=%v", d.status, d.startedAt, d.session != nil)
+
 	if d.status != DevServerRunning {
+		log.InfoLog.Printf("CheckHealth: early return - status not Running")
 		return
 	}
 
@@ -725,7 +751,7 @@ func (d *DevServer) CheckHealth() {
 	d.UpdateOutputFromSession()
 
 	if d.session == nil {
-		log.InfoLog.Printf("Dev server session is nil, marking as crashed")
+		log.InfoLog.Printf("CheckHealth: session is nil, marking as crashed")
 		d.crashCount++
 		d.SetStatus(DevServerCrashed)
 		d.appendOutput(fmt.Sprintf("[%s] Dev server crashed! Session was nil.", time.Now().Format("15:04:05")))
@@ -733,10 +759,24 @@ func (d *DevServer) CheckHealth() {
 	}
 
 	sessionExists := d.session.DoesSessionExist()
-	log.InfoLog.Printf("Dev server session exists check: %v", sessionExists)
+	timeSinceStart := time.Since(d.startedAt)
+	log.InfoLog.Printf("CheckHealth: sessionExists=%v, timeSinceStart=%v, startedAt=%v", sessionExists, timeSinceStart, d.startedAt)
+
+	// Safety check: if startedAt is zero time, use current time as fallback
+	if d.startedAt.IsZero() {
+		log.WarningLog.Printf("CheckHealth: startedAt is zero, using current time for safety")
+		d.startedAt = time.Now()
+		timeSinceStart = time.Since(d.startedAt)
+		log.InfoLog.Printf("CheckHealth: updated startedAt to %v, timeSinceStart=%v", d.startedAt, timeSinceStart)
+	}
 
 	if !sessionExists {
-		log.InfoLog.Printf("Dev server session doesn't exist, marking as crashed")
+		log.InfoLog.Printf("CheckHealth: checking grace period - timeSinceStart=%v < devServerGracePeriod=%v = %v", timeSinceStart, devServerGracePeriod, timeSinceStart < devServerGracePeriod)
+		if timeSinceStart < devServerGracePeriod {
+			log.InfoLog.Printf("CheckHealth: within grace period, skipping crash detection")
+			return
+		}
+		log.InfoLog.Printf("CheckHealth: grace period exceeded, marking as crashed")
 		d.crashCount++
 		d.SetStatus(DevServerCrashed)
 		output := d.Output()
@@ -807,6 +847,7 @@ func (d *DevServer) IncrementCrashCount() {
 
 // UpdateOutput updates the output from the tmux session
 func (d *DevServer) UpdateOutput() {
+	log.InfoLog.Printf("UpdateOutput: called, calling UpdateOutputFromSession")
 	d.UpdateOutputFromSession()
 }
 
@@ -855,6 +896,8 @@ func (d *DevServer) Start() error {
 		return fmt.Errorf("failed to start dev server: %w", err)
 	}
 
+	d.startedAt = time.Now()
+	log.InfoLog.Printf("DevServer.Start: startedAt set to %v", d.startedAt)
 	d.SetStatus(DevServerRunning)
 	log.InfoLog.Printf("DevServer.Start: status = Running, dev server started successfully")
 
@@ -865,6 +908,9 @@ func (d *DevServer) Start() error {
 func (d *DevServer) Stop() error {
 	if d.session == nil {
 		d.SetStatus(DevServerStopped)
+		d.outputMu.Lock()
+		d.output = make([]string, 0)
+		d.outputMu.Unlock()
 		return nil
 	}
 
@@ -877,12 +923,16 @@ func (d *DevServer) Stop() error {
 
 	d.session = nil
 	d.SetStatus(DevServerStopped)
+	d.outputMu.Lock()
+	d.output = make([]string, 0)
+	d.outputMu.Unlock()
 	return nil
 }
 
 // runBuild runs the build command
 func (d *DevServer) runBuild() error {
 	cmd := exec.Command("sh", "-c", d.config.BuildCommand)
+	cmd.Dir = d.worktree
 	output, err := cmd.Output()
 	if err != nil {
 		d.appendOutput(string(output))
@@ -928,11 +978,13 @@ func (d *DevServer) startDevServer() error {
 	// Use -c to set working directory instead of cd && pattern
 	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", fullSessionName, "-c", d.worktree, "-x", "200", "-y", "50", "sh", "-c", devCmd)
 
+	log.InfoLog.Printf("Executing tmux command: %v", tmuxCmd.Args)
 	ptmx, err := tmux.MakePtyFactory().Start(tmuxCmd)
 	if err != nil {
 		log.ErrorLog.Printf("Failed to start tmux session: %v", err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
+	log.InfoLog.Printf("Tmux session command started successfully")
 
 	// Create TmuxSession object first so we can use DoesSessionExist
 	d.session = tmux.NewTmuxSession(fullSessionName, d.config.DevCommand)
@@ -941,11 +993,14 @@ func (d *DevServer) startDevServer() error {
 	log.InfoLog.Printf("Waiting for tmux session to be created...")
 	timeout := time.After(2 * time.Second)
 	sleepDuration := 5 * time.Millisecond
+	attempt := 0
 	for !d.session.DoesSessionExist() {
+		attempt++
+		log.InfoLog.Printf("Polling session existence, attempt %d, sleepDuration=%v", attempt, sleepDuration)
 		select {
 		case <-timeout:
 			ptmx.Close()
-			log.ErrorLog.Printf("Timed out waiting for tmux session %s", fullSessionName)
+			log.ErrorLog.Printf("Timed out waiting for tmux session %s after %d attempts", fullSessionName, attempt)
 			return fmt.Errorf("timed out waiting for tmux session %s", fullSessionName)
 		default:
 			time.Sleep(sleepDuration)
@@ -956,8 +1011,19 @@ func (d *DevServer) startDevServer() error {
 	}
 	ptmx.Close()
 
-	log.InfoLog.Printf("Session exists check: %v", d.session.DoesSessionExist())
+	log.InfoLog.Printf("Waiting 500ms for session to stabilize...")
+	time.Sleep(500 * time.Millisecond)
 
+	finalExists := d.session.DoesSessionExist()
+	log.InfoLog.Printf("Session exists check after PTY close + 500ms delay: %v (after %d attempts)", finalExists, attempt)
+
+	if !finalExists {
+		log.WarningLog.Printf("Session disappeared during stabilization period! The dev command may have failed to start.")
+		log.WarningLog.Printf("Tip: Check that dependencies are installed and the dev command works in the worktree directory")
+		log.WarningLog.Printf("Dev server will continue, but will be marked as crashed if it doesn't stay running")
+	}
+
+	log.InfoLog.Printf("Marking server as running")
 	d.appendOutput(fmt.Sprintf("[%s] Starting dev server: %s", time.Now().Format("15:04:05"), d.config.DevCommand))
 
 	return nil

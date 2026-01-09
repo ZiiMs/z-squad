@@ -713,20 +713,30 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() {
 			return m, nil
 		}
-		// Show help screen before attaching
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
-			if err != nil {
-				m.handleError(err)
-				return
+
+		// Check which tab is active to determine what to attach to
+		if m.tabbedWindow.IsInServerTab() {
+			// Server tab - attach to dev server session
+			return m, m.handleDevServerAttach(selected)
+		} else {
+			// Preview/Diff tab - attach to instance session (existing behavior)
+			if !selected.TmuxAlive() {
+				return m, nil
 			}
-			<-ch
-			m.state = stateDefault
-		})
-		return m, nil
+			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
+				ch, err := m.list.Attach()
+				if err != nil {
+					m.handleError(err)
+					return
+				}
+				<-ch
+				m.state = stateDefault
+			})
+			return m, nil
+		}
 	default:
 		return m, nil
 	}
@@ -902,6 +912,42 @@ func (m *home) handleDevServerStop(instance *session.Instance) tea.Cmd {
 	}
 
 	return m.instanceChanged()
+}
+
+func (m *home) handleDevServerAttach(instance *session.Instance) tea.Cmd {
+	// Check if dev server exists and is running
+	if instance.DevServer == nil {
+		return m.handleError(fmt.Errorf("no dev server configured"))
+	}
+
+	status := instance.DevServer.Status()
+	if status != session.DevServerRunning {
+		return m.handleError(fmt.Errorf("dev server is not running (status: %v)", status))
+	}
+
+	// Check if dev server session exists
+	if !instance.DevServer.SessionExists() {
+		return m.handleError(fmt.Errorf("dev server session does not exist"))
+	}
+
+	// Get the dev server tmux session
+	devServerSession := instance.DevServer.GetDevServerSession()
+	if devServerSession == nil {
+		return m.handleError(fmt.Errorf("dev server session is nil"))
+	}
+
+	// Show help screen before attaching
+	m.showHelpScreen(helpTypeServerAttach{}, func() {
+		ch, err := devServerSession.Attach()
+		if err != nil {
+			m.handleError(err)
+			return
+		}
+		<-ch
+		m.state = stateDefault
+	})
+
+	return nil
 }
 
 func (m *home) handleDevServerEdit(instance *session.Instance) tea.Cmd {

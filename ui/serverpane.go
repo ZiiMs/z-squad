@@ -110,15 +110,13 @@ func (s *ServerPane) UpdateContent(instance *session.Instance) error {
 		}
 	}
 
-	// Update viewport and auto-scroll
-	if s.viewport.Width > 0 && s.viewport.Height > 0 {
+	// Update viewport and auto-scroll (only when not in scroll mode)
+	if s.viewport.Width > 0 && s.viewport.Height > 0 && !s.isScrolling {
 		wasAtBottom := s.viewport.AtBottom()
 
-		// Update viewport content
 		s.viewport.SetContent(s.text)
 
-		// Auto-scroll if: not in scroll mode OR was already at bottom
-		if !s.isScrolling || wasAtBottom {
+		if wasAtBottom {
 			s.viewport.GotoBottom()
 			s.userScrolled = false
 		}
@@ -132,16 +130,17 @@ func (s *ServerPane) String() string {
 		return strings.Repeat("\n", s.height)
 	}
 
-	// Add footer when in scroll mode
 	if s.isScrolling {
-		footer := lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode | ↑↓ to scroll")
-
-		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, s.text, footer))
+		return s.viewport.View()
 	}
 
-	// Always render from viewport (handles both auto-scroll and manual scroll)
+	wasAtBottom := s.viewport.AtBottom()
+	s.viewport.SetContent(s.text)
+
+	if wasAtBottom {
+		s.viewport.GotoBottom()
+	}
+
 	return s.viewport.View()
 }
 
