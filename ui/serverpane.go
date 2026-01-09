@@ -13,11 +13,12 @@ var serverPaneStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
 
 type ServerPane struct {
-	width       int
-	height      int
-	text        string
-	viewport    viewport.Model
-	isScrolling bool
+	width        int
+	height       int
+	text         string
+	viewport     viewport.Model
+	isScrolling  bool
+	userScrolled bool // Track if user manually scrolled
 }
 
 func NewServerPane() *ServerPane {
@@ -109,6 +110,20 @@ func (s *ServerPane) UpdateContent(instance *session.Instance) error {
 		}
 	}
 
+	// Update viewport and auto-scroll
+	if s.viewport.Width > 0 && s.viewport.Height > 0 {
+		wasAtBottom := s.viewport.AtBottom()
+
+		// Update viewport content
+		s.viewport.SetContent(s.text)
+
+		// Auto-scroll if: not in scroll mode OR was already at bottom
+		if !s.isScrolling || wasAtBottom {
+			s.viewport.GotoBottom()
+			s.userScrolled = false
+		}
+	}
+
 	return nil
 }
 
@@ -117,65 +132,66 @@ func (s *ServerPane) String() string {
 		return strings.Repeat("\n", s.height)
 	}
 
+	// Add footer when in scroll mode
 	if s.isScrolling {
-		return s.viewport.View()
+		footer := lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
+			Render("ESC to exit scroll mode | ↑↓ to scroll")
+
+		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, s.text, footer))
 	}
 
-	availableHeight := s.height - 1
-
-	lines := strings.Split(s.text, "\n")
-
-	if availableHeight > 0 {
-		if len(lines) > availableHeight {
-			// Show bottom of content (most recent output) with ellipsis at top
-			// Take (availableHeight - 1) lines from the bottom, then prepend ellipsis
-			lines = append([]string{"..."}, lines[len(lines)-availableHeight+1:]...)
-		} else {
-			padding := availableHeight - len(lines)
-			lines = append(lines, make([]string, padding)...)
-		}
-	}
-
-	content := strings.Join(lines, "\n")
-	rendered := serverPaneStyle.Width(s.width).Render(content)
-	return rendered
+	// Always render from viewport (handles both auto-scroll and manual scroll)
+	return s.viewport.View()
 }
 
 func (s *ServerPane) ScrollUp() {
 	if !s.isScrolling {
+		// Entering scroll mode
 		s.isScrolling = true
-		content := s.text
+		s.userScrolled = true
+
+		// Add footer for scroll mode
 		footer := lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
+			Render("ESC to exit scroll mode | ↑↓ to scroll")
 
-		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, content, footer))
-		s.viewport.GotoBottom()
+		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, s.text, footer))
 	} else {
-		s.viewport.LineUp(1)
+		s.userScrolled = true
 	}
+
+	s.viewport.LineUp(1)
 }
 
 func (s *ServerPane) ScrollDown() {
 	if !s.isScrolling {
+		// Entering scroll mode
 		s.isScrolling = true
-		content := s.text
+		s.userScrolled = true
+
 		footer := lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
+			Render("ESC to exit scroll mode | ↑↓ to scroll")
 
-		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, content, footer))
-		s.viewport.GotoBottom()
+		s.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, s.text, footer))
 	} else {
-		s.viewport.LineDown(1)
+		s.userScrolled = true
 	}
+
+	s.viewport.LineDown(1)
 }
 
 func (s *ServerPane) ResetToNormalMode() {
 	if s.isScrolling {
 		s.isScrolling = false
-		s.viewport.SetContent("")
-		s.viewport.GotoTop()
+		s.userScrolled = false
+
+		// Remove footer, restore normal content
+		s.viewport.SetContent(s.text)
+
+		// Jump to bottom (latest output)
+		s.viewport.GotoBottom()
 	}
 }
 

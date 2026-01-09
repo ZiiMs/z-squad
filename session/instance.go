@@ -57,12 +57,14 @@ type DevServerConfig struct {
 type DevServer struct {
 	config     DevServerConfig
 	status     DevServerStatus
+	statusMu   sync.RWMutex // Protect status field
 	session    *tmux.TmuxSession
 	crashCount int
 	output     []string
 	outputMu   sync.RWMutex
 	worktree   string
 	instance   string
+	startMu    sync.Mutex // Prevent concurrent starts
 }
 
 // Instance is a running instance of claude code.
@@ -685,9 +687,10 @@ func (d *DevServer) UpdateOutputFromSession() error {
 	return nil
 }
 
-// IsRunning returns true if the dev server is currently running
+// IsRunning returns true if the dev server is currently running or starting
 func (d *DevServer) IsRunning() bool {
-	return d.Status() == DevServerRunning || d.Status() == DevServerStarting
+	status := d.Status()
+	return status == DevServerRunning || status == DevServerStarting || status == DevServerBuilding
 }
 
 // SessionExists returns true if the tmux session exists and is responsive
@@ -724,7 +727,7 @@ func (d *DevServer) CheckHealth() {
 	if d.session == nil {
 		log.InfoLog.Printf("Dev server session is nil, marking as crashed")
 		d.crashCount++
-		d.status = DevServerCrashed
+		d.SetStatus(DevServerCrashed)
 		d.appendOutput(fmt.Sprintf("[%s] Dev server crashed! Session was nil.", time.Now().Format("15:04:05")))
 		return
 	}
@@ -735,7 +738,7 @@ func (d *DevServer) CheckHealth() {
 	if !sessionExists {
 		log.InfoLog.Printf("Dev server session doesn't exist, marking as crashed")
 		d.crashCount++
-		d.status = DevServerCrashed
+		d.SetStatus(DevServerCrashed)
 		output := d.Output()
 		if output != "" {
 			lastLines := strings.Split(output, "\n")
@@ -770,11 +773,20 @@ func (d *DevServer) HasUpdated() bool {
 
 // Status returns the current dev server status
 func (d *DevServer) Status() DevServerStatus {
+	d.statusMu.RLock()
+	defer d.statusMu.RUnlock()
 	return d.status
 }
 
-// SetStatus sets the dev server status
+// SetStatus sets the dev server status (thread-safe)
 func (d *DevServer) SetStatus(status DevServerStatus) {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
+	d.status = status
+}
+
+// setStatusUnsafe sets status without locking (use only when already holding statusMu or startMu)
+func (d *DevServer) setStatusUnsafe(status DevServerStatus) {
 	d.status = status
 }
 
@@ -807,6 +819,9 @@ func (d *DevServer) Output() string {
 
 // Start starts the dev server
 func (d *DevServer) Start() error {
+	d.startMu.Lock()
+	defer d.startMu.Unlock()
+
 	log.InfoLog.Printf("DevServer.Start: called")
 
 	if d.IsRunning() {
@@ -818,29 +833,29 @@ func (d *DevServer) Start() error {
 		return fmt.Errorf("dev command not configured")
 	}
 
-	d.status = DevServerBuilding
+	d.SetStatus(DevServerBuilding)
 	log.InfoLog.Printf("DevServer.Start: status = Building")
 
 	if d.config.BuildCommand != "" {
 		log.InfoLog.Printf("DevServer.Start: running build command: %s", d.config.BuildCommand)
 		if err := d.runBuild(); err != nil {
 			log.ErrorLog.Printf("DevServer.Start: build failed: %v", err)
-			d.status = DevServerStopped
+			d.SetStatus(DevServerStopped)
 			return fmt.Errorf("build failed: %w", err)
 		}
 		log.InfoLog.Printf("DevServer.Start: build completed")
 	}
 
-	d.status = DevServerStarting
+	d.SetStatus(DevServerStarting)
 	log.InfoLog.Printf("DevServer.Start: status = Starting")
 
 	if err := d.startDevServer(); err != nil {
 		log.ErrorLog.Printf("DevServer.Start: startDevServer failed: %v", err)
-		d.status = DevServerStopped
+		d.SetStatus(DevServerStopped)
 		return fmt.Errorf("failed to start dev server: %w", err)
 	}
 
-	d.status = DevServerRunning
+	d.SetStatus(DevServerRunning)
 	log.InfoLog.Printf("DevServer.Start: status = Running, dev server started successfully")
 
 	return nil
@@ -849,7 +864,7 @@ func (d *DevServer) Start() error {
 // Stop stops the dev server
 func (d *DevServer) Stop() error {
 	if d.session == nil {
-		d.status = DevServerStopped
+		d.SetStatus(DevServerStopped)
 		return nil
 	}
 
@@ -861,7 +876,7 @@ func (d *DevServer) Stop() error {
 	}
 
 	d.session = nil
-	d.status = DevServerStopped
+	d.SetStatus(DevServerStopped)
 	return nil
 }
 

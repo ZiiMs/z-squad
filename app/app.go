@@ -831,6 +831,17 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 }
 
 func (m *home) handleDevServerStart(instance *session.Instance) tea.Cmd {
+	// GUARD: Check if server is already active
+	if instance.DevServer != nil {
+		status := instance.DevServer.Status()
+		if status == session.DevServerRunning ||
+			status == session.DevServerStarting ||
+			status == session.DevServerBuilding {
+			log.InfoLog.Printf("Dev server already active (status=%v), ignoring start request", status)
+			return nil
+		}
+	}
+
 	worktreePath := ""
 	repoPath := ""
 
