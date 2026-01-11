@@ -103,6 +103,10 @@ func (w *TabbedWindow) Toggle() {
 	w.activeTab = (w.activeTab + 1) % len(w.tabs)
 }
 
+func (w *TabbedWindow) ToggleBackward() {
+	w.activeTab = (w.activeTab - 1 + len(w.tabs)) % len(w.tabs)
+}
+
 // ToggleWithReset toggles the tab and resets preview pane to normal mode
 func (w *TabbedWindow) ToggleWithReset(instance *session.Instance) error {
 	// Reset preview pane to normal mode before switching

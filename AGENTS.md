@@ -73,6 +73,28 @@ Shell-based edits:
 Direct file edits are mandatory for correctness and reviewability.
 
 
+## ❓ When in Doubt
+
+If any instruction is ambiguous:
+- Prefer safety over completion
+- Do not guess intent
+- Ask for clarification or stop with a clear explanation
+
+Never assume:
+- File structure changes
+- Config format changes
+- Runtime behavior not explicitly described
+
+## 🚫 Refactoring Rules
+
+Agents MUST NOT:
+- Refactor code
+- Rename symbols
+- Reorganize packages
+- Change public APIs
+
+Unless explicitly instructed to do so.
+
 
 ## Development Commands
 

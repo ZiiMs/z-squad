@@ -27,6 +27,8 @@ type helpTypeInstanceStart struct {
 
 type helpTypeInstanceAttach struct{}
 
+type helpTypeServerAttach struct{}
+
 type helpTypeInstanceCheckout struct{}
 
 func helpStart(instance *session.Instance) helpText {
@@ -53,7 +55,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
 		"",
 		headerStyle.Render("Other:"),
-		keyStyle.Render("tab")+descStyle.Render("       - Switch between preview and diff tabs"),
+		keyStyle.Render("tab/shift+tab")+descStyle.Render(" - Switch between tabs (forward/backward)"),
 		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in diff view"),
 		keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
 	)
@@ -91,6 +93,15 @@ func (h helpTypeInstanceAttach) toContent() string {
 	return content
 }
 
+func (h helpTypeServerAttach) toContent() string {
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Attaching to Dev Server"),
+		"",
+		descStyle.Render("To detach from the dev server, press ")+keyStyle.Render("ctrl-q"),
+	)
+	return content
+}
+
 func (h helpTypeInstanceCheckout) toContent() string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Checkout Instance"),
@@ -114,6 +125,9 @@ func (h helpTypeInstanceStart) mask() uint32 {
 }
 func (h helpTypeInstanceAttach) mask() uint32 {
 	return 1 << 2
+}
+func (h helpTypeServerAttach) mask() uint32 {
+	return 1 << 4
 }
 func (h helpTypeInstanceCheckout) mask() uint32 {
 	return 1 << 3

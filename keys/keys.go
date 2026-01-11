@@ -18,6 +18,7 @@ const (
 	KeySubmit
 
 	KeyTab        // Tab is a special keybinding for switching between panes.
+	KeyShiftTab   // Shift+Tab for backward tab navigation
 	KeySubmitName // SubmitName is a special keybinding for submitting the name of a new instance.
 
 	KeyCheckout
@@ -50,6 +51,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"D":          KeyKill,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
+	"shift+tab":  KeyShiftTab,
 	"c":          KeyCheckout,
 	"r":          KeyResume,
 	"p":          KeySubmit,
@@ -112,6 +114,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyTab: key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "switch tab"),
+	),
+	KeyShiftTab: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("shift+tab", "prev tab"),
 	),
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
