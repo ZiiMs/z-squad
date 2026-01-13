@@ -330,13 +330,10 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	return nil
 }
 
-// Kill terminates the instance and cleans up all resources
+// Kill terminates the instance and cleans up all resources.
+// This method always attempts cleanup regardless of the started status,
+// since resources may exist even if started is false.
 func (i *Instance) Kill() error {
-	if !i.started {
-		// If instance was never started, just return success
-		return nil
-	}
-
 	var errs []error
 
 	// Stop dev server first if it's running
@@ -346,15 +343,14 @@ func (i *Instance) Kill() error {
 		}
 	}
 
-	// Always try to cleanup both resources, even if one fails
-	// Clean up tmux session first since it's using the git worktree
+	// Clean up tmux session if it exists (check regardless of started status)
 	if i.tmuxSession != nil {
 		if err := i.tmuxSession.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
 		}
 	}
 
-	// Then clean up git worktree
+	// Clean up git worktree if it exists (check regardless of started status)
 	if i.gitWorktree != nil {
 		if err := i.gitWorktree.Cleanup(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to cleanup git worktree: %w", err))

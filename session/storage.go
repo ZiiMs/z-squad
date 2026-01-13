@@ -4,6 +4,8 @@ import (
 	"claude-squad/config"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -65,9 +67,9 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	// Convert instances to InstanceData
 	data := make([]InstanceData, 0)
 	for _, instance := range instances {
-		if instance.Started() {
-			data = append(data, instance.ToInstanceData())
-		}
+		// Save all instances, not just started ones, to ensure paused
+		// instances are properly persisted and can be resumed on restart
+		data = append(data, instance.ToInstanceData())
 	}
 
 	// Marshal to JSON
@@ -153,4 +155,27 @@ func (s *Storage) UpdateInstance(instance *Instance) error {
 // DeleteAllInstances removes all stored instances
 func (s *Storage) DeleteAllInstances() error {
 	return s.state.DeleteAllInstances()
+}
+
+// CleanupProjectFolder removes the project hash folder and all its contents.
+// Should be called when the last instance for a project is deleted.
+func CleanupProjectFolder(repoPath string) error {
+	configDir, err := config.GetConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	identity := config.RepoIdentity(repoPath)
+	projectDir := filepath.Join(configDir, identity)
+
+	// Check if the directory exists
+	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	if err := os.RemoveAll(projectDir); err != nil {
+		return fmt.Errorf("failed to remove project folder: %w", err)
+	}
+
+	return nil
 }

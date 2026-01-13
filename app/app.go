@@ -626,13 +626,36 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return fmt.Errorf("instance %s is currently checked out", selected.Title)
 			}
 
+			// Store repo path before deletion for potential folder cleanup
+			repoPath := worktree.GetRepoPath()
+
 			// Delete from storage first
 			if err := m.storage.DeleteInstance(selected.Title); err != nil {
 				return err
 			}
 
-			// Then kill the instance
+			// Then kill the instance (cleans up tmux and worktree)
 			m.list.Kill()
+
+			// Check if any instances remain for this repo, if not cleanup project folder
+			remainingInstances := m.list.GetInstances()
+			hasInstancesForRepo := false
+			for _, inst := range remainingInstances {
+				wt, err := inst.GetGitWorktree()
+				if err != nil {
+					continue
+				}
+				if wt.GetRepoPath() == repoPath {
+					hasInstancesForRepo = true
+					break
+				}
+			}
+			if !hasInstancesForRepo {
+				if err := session.CleanupProjectFolder(repoPath); err != nil {
+					log.ErrorLog.Printf("failed to cleanup project folder: %v", err)
+				}
+			}
+
 			return instanceChangedMsg{}
 		}
 

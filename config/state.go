@@ -20,6 +20,11 @@ func repoIdentity(repoRoot string) string {
 	return fmt.Sprintf("%x", hash)
 }
 
+// RepoIdentity is exported for use by other packages
+func RepoIdentity(repoRoot string) string {
+	return repoIdentity(repoRoot)
+}
+
 func getRepoStatePath(repoPath string) (string, error) {
 	configDir, err := GetConfigDir()
 	if err != nil {
